@@ -1949,8 +1949,7 @@ def create_box_office_sale(
             raise HttpError(409, "Not enough tickets remain for this sale.")
 
         tiers = list(
-            TicketPriceTier.objects.select_for_update()
-            .filter(ticket_type=ticket)
+            TicketPriceTier.objects.filter(ticket_type=ticket)
             .annotate(
                 _held=Sum(
                     "order_items__quantity",
