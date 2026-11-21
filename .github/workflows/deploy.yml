@@ -8,7 +8,7 @@ concurrency:
     cancel-in-progress: false
 
 env:
-    AWS_REGION: eu-west-3
+    AWS_REGION: eu-north-1
     CLUSTER: eventflow-cluster
 
 jobs:
