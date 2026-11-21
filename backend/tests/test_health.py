@@ -14,6 +14,13 @@ def test_health_endpoint_returns_service_status() -> None:
     assert response.json() == {"status": "ok", "service": "eventflow-api"}
 
 
+def test_healthz_endpoint_is_available_at_api_prefix() -> None:
+    response = Client().get("/api/healthz")
+
+    assert response.status_code == 200
+    assert response.content == b"ok"
+
+
 def test_openapi_schema_is_available() -> None:
     response = Client().get("/api/v1/openapi.json")
 
