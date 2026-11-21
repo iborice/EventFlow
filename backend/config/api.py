@@ -557,13 +557,18 @@ def create_reservation(
         order = (
             Order.objects.select_for_update()
             .filter(event=event, idempotency_key=payload.idempotency_key)
-            .select_related("promotion")
             .prefetch_related("items__ticket_type", "items__price_tier")
             .first()
         )
         if order is not None:
             item = order.items.first()
-            stored_code = order.promotion.code if order.promotion_id else None
+            stored_code = (
+                PromotionCode.objects.filter(pk=order.promotion_id)
+                .values_list("code", flat=True)
+                .first()
+                if order.promotion_id
+                else None
+            )
             stored_seat_ids = (
                 list(
                     SeatReservation.objects.filter(order_item=item)
@@ -713,12 +718,17 @@ def offer_waitlist_for_ticket(ticket_type_id: int, now=None) -> int:
                 status=WaitlistEntry.Status.OFFERED,
                 offer_expires_at__lte=at,
             )
-            .select_related("order")
         )
         for entry in expired_entries:
-            if entry.order_id and entry.order.status == Order.Status.PENDING:
-                entry.order.status = Order.Status.EXPIRED
-                entry.order.save(update_fields=["status"])
+            if entry.order_id:
+                entry_order = (
+                    Order.objects.select_for_update()
+                    .filter(pk=entry.order_id)
+                    .first()
+                )
+                if entry_order and entry_order.status == Order.Status.PENDING:
+                    entry_order.status = Order.Status.EXPIRED
+                    entry_order.save(update_fields=["status"])
             entry.status = WaitlistEntry.Status.EXPIRED
             entry.save(update_fields=["status"])
 

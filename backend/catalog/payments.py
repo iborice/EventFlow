@@ -44,7 +44,7 @@ def create_checkout_session(order_id: UUID) -> str:
     now = timezone.now()
     with transaction.atomic():
         Event.objects.select_for_update().get(pk=event_id)
-        order = Order.objects.select_for_update().select_related("event").get(pk=order_id)
+        order = Order.objects.select_for_update().get(pk=order_id)
         items = list(
             OrderItem.objects.select_related("ticket_type")
             .filter(order=order)
