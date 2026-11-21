@@ -1,0 +1,134 @@
+name: Deploy staging
+on:
+    push:
+        branches: [main]
+
+concurrency:
+    group: deploy-staging
+    cancel-in-progress: false
+
+env:
+    AWS_REGION: eu-west-3
+    CLUSTER: eventflow-cluster
+
+jobs:
+    ci:
+        uses: ./.github/workflows/ci.yml
+
+    build:
+        needs: ci
+        runs-on: ubuntu-latest
+        outputs:
+            backend: ${{ steps.build.outputs.backend }}
+            web: ${{ steps.build.outputs.web }}
+        steps:
+            - uses: actions/checkout@v4
+            - uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+            - id: ecr
+              uses: aws-actions/amazon-ecr-login@v2
+            - id: build
+              run: |
+                  REG=${{ steps.ecr.outputs.registry }}
+                  SHA=${{ github.sha }}
+                  docker build -t $REG/eventflow-backend:$SHA ./backend
+                  docker build -t $REG/eventflow-web:$SHA \
+                    --build-arg NEXT_PUBLIC_SITE_URL=${{ vars.STAGING_URL }} \
+                    --build-arg API_PROXY_TARGET=${{ vars.STAGING_URL }} .
+                  docker push $REG/eventflow-backend:$SHA
+                  docker push $REG/eventflow-web:$SHA
+                  echo "backend=$REG/eventflow-backend:$SHA" >> $GITHUB_OUTPUT
+                  echo "web=$REG/eventflow-web:$SHA" >> $GITHUB_OUTPUT
+
+    deploy:
+        needs: build
+        runs-on: ubuntu-latest
+        environment: staging
+        steps:
+            - uses: actions/checkout@v4
+            - uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+                  aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            # 1. Migrations (tâche ponctuelle). Le déploiement s'arrête si elles échouent.
+            - id: migrate-def
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                  task-definition: .aws/migrate-staging.json
+                  container-name: migrate
+                  image: ${{ needs.build.outputs.backend }}
+            - name: Run migrations
+              run: |
+                  TD_ARN=$(aws ecs register-task-definition \
+                    --cli-input-json file://${{ steps.migrate-def.outputs.task-definition }} \
+                    --query taskDefinition.taskDefinitionArn --output text)
+                  TASK_ARN=$(aws ecs run-task --cluster $CLUSTER --launch-type FARGATE \
+                    --task-definition $TD_ARN \
+                    --network-configuration "awsvpcConfiguration={subnets=[${{ vars.SUBNETS }}],securityGroups=[${{ vars.TASK_SG }}],assignPublicIp=ENABLED}" \
+                    --query 'tasks[0].taskArn' --output text)
+                  aws ecs wait tasks-stopped --cluster $CLUSTER --tasks $TASK_ARN
+                  CODE=$(aws ecs describe-tasks --cluster $CLUSTER --tasks $TASK_ARN \
+                    --query 'tasks[0].containers[0].exitCode' --output text)
+                  echo "Migration exit code: $CODE"
+                  [ "$CODE" = "0" ]
+
+            # 2. API
+            - id: api-def
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                  task-definition: .aws/api-staging.json
+                  container-name: api
+                  image: ${{ needs.build.outputs.backend }}
+            - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+              with:
+                  task-definition: ${{ steps.api-def.outputs.task-definition }}
+                  service: eventflow-api-staging-service
+                  cluster: ${{ env.CLUSTER }}
+                  wait-for-service-stability: true
+
+            # 3. Worker
+            - id: worker-def
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                  task-definition: .aws/worker-staging.json
+                  container-name: worker
+                  image: ${{ needs.build.outputs.backend }}
+            - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+              with:
+                  task-definition: ${{ steps.worker-def.outputs.task-definition }}
+                  service: eventflow-worker-staging-service-eqzqspxd
+                  cluster: ${{ env.CLUSTER }}
+                  wait-for-service-stability: true
+
+            # 4. Beat
+            - id: beat-def
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                  task-definition: .aws/beat-staging.json
+                  container-name: beat
+                  image: ${{ needs.build.outputs.backend }}
+            - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+              with:
+                  task-definition: ${{ steps.beat-def.outputs.task-definition }}
+                  service: eventflow-beat-staging-service
+                  cluster: ${{ env.CLUSTER }}
+                  wait-for-service-stability: true
+
+            # 5. Web
+            - id: web-def
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                  task-definition: .aws/web-staging.json
+                  container-name: web
+                  image: ${{ needs.build.outputs.web }}
+            - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+              with:
+                  task-definition: ${{ steps.web-def.outputs.task-definition }}
+                  service: eventflow-web-staging-service
+                  cluster: ${{ env.CLUSTER }}
+                  wait-for-service-stability: true
