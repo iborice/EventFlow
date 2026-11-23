@@ -9,7 +9,7 @@ concurrency:
 
 env:
     AWS_REGION: eu-north-1
-    CLUSTER: eventflow-staging
+    CLUSTER: eventflow
 
 jobs:
     ci:
