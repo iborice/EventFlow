@@ -90,6 +90,7 @@ jobs:
           service: eventflow-api-staging-service
           cluster: ${{ env.CLUSTER }}
           wait-for-service-stability: true
+          wait-for-minutes: 10
 
       # 3. Worker
       - id: worker-def
